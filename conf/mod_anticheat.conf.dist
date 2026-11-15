@@ -1,0 +1,85 @@
+# mod-anticheat configuration. See README.md and docs/DETECTORS.md.
+[worldserver]
+
+Anticheat.Enable = 1
+# 0: observe/store; 1: observe/store + GM alerts; 2: automatic enforcement.
+# Always validate on your server in mode 0 before considering mode 2.
+Anticheat.Mode = 0
+Anticheat.GM.AnnounceLevel = 1
+Anticheat.GM.AlertFrequencyMs = 30000
+Anticheat.LoginMessage = 1
+# Cumulative packet/geometry counters and movement/scoring elapsed time every 60 seconds.
+# Timing includes state-lock acquisition; terrain queries and SQL are outside this interval.
+Anticheat.Instrumentation = 0
+
+# Algorithms remain active in observation mode. Diagnostic-only detectors cannot
+# trigger sanctions even if their weights are changed.
+Anticheat.DetectSpeedHack = 1
+Anticheat.DetectFlyHack = 1
+Anticheat.DetectTeleportHack = 1
+Anticheat.DetectClimbHack = 1
+Anticheat.DetectJumpHack = 1
+Anticheat.DetectGravityHack = 1
+Anticheat.DetectWaterwalkHack = 1
+Anticheat.DetectNofallHack = 1
+Anticheat.DetectIgnoreControl = 1
+Anticheat.DetectFakePing = 1
+Anticheat.DetectNoClipHack = 1
+Anticheat.DetectWarden = 1
+
+Anticheat.SpeedHack.Tolerance = 1.25
+Anticheat.TeleportHack.DistanceThreshold = 50.0
+Anticheat.ClimbHack.AngleThreshold = 80.0
+Anticheat.FakePing.MaxDesync = 2000
+Anticheat.Movement.SpeedWindowMs = 3000
+Anticheat.Movement.MaxSampleGapMs = 5000
+Anticheat.Movement.TransitionGraceMs = 1500
+Anticheat.Movement.LatencyCapMs = 500
+Anticheat.Movement.GeometryIntervalMs = 500
+
+# Repeated packets belonging to one continuous anomaly count once. RearmMs
+# must cover at least two speed windows plus TransitionGraceMs (7500 default).
+Anticheat.Score.CooldownMs = 10000
+Anticheat.Score.RearmMs = 10000
+Anticheat.Score.GlobalCooldownMs = 1000
+Anticheat.Score.EvidenceWindowMs = 120000
+Anticheat.Score.MinConfidence = 0.8
+Anticheat.Score.MinObservationConfidence = 0.3
+Anticheat.Score.MaxPerObservation = 20.0
+Anticheat.Score.DecayPerSecond = 1.0
+Anticheat.Weight.SpeedHack = 5.0
+Anticheat.Weight.FlyHack = 20.0
+Anticheat.Weight.Teleport = 15.0
+Anticheat.Weight.Climb = 5.0
+Anticheat.Weight.Jump = 5.0
+Anticheat.Weight.Gravity = 5.0
+Anticheat.Weight.Waterwalk = 10.0
+Anticheat.Weight.Nofall = 0.0
+Anticheat.Weight.IgnoreControl = 10.0
+Anticheat.Weight.FakePing = 0.0
+Anticheat.Weight.NoClip = 0.0
+Anticheat.Weight.Warden = 0.0
+
+# Used ONLY in mode 2. Scores alone never authorize an action.
+# Zero threshold disables the corresponding action. Permanent bans unsupported.
+Anticheat.Enforcement.KickScore = 100.0
+Anticheat.Enforcement.BanScore = 150.0
+Anticheat.Enforcement.MinEvents = 5
+Anticheat.Enforcement.MinFamilies = 2
+Anticheat.Enforcement.MinSpanMs = 30000
+Anticheat.Enforcement.MaxLatencyMs = 750
+Anticheat.Enforcement.BanSeconds = 86400
+
+# Bounds include the single in-flight transaction. Normal events cannot consume
+# ReservedActions. Failed commits retain the batch; overload is logged/counted.
+Anticheat.Persistence.Capacity = 4096
+Anticheat.Persistence.ReservedActions = 128
+Anticheat.Persistence.BatchSize = 128
+Anticheat.Persistence.RetryMs = 5000
+Anticheat.Persistence.ShutdownTimeoutMs = 30000
+
+# Removed legacy keys: MaxReportsForKick, MaxReportsForBan, BanDuration,
+# GM.Announce and AlertFrequency. They intentionally do not enable sanctions.
+# .anticheat reload validates a complete candidate; invalid config retains the
+# previous revision. A valid reload resets live movement/score evidence before
+# new analysis, preserving historical SQL records and per-session action latches.

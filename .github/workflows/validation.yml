@@ -1,0 +1,56 @@
+name: Validate anticheat
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  portable:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        sanitizer: [none, address-undefined, thread]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Configure
+        shell: bash
+        run: |
+          options=()
+          if [ '${{ matrix.sanitizer }}' = address-undefined ]; then
+            options+=(-DANTICHEAT_ASAN=ON -DANTICHEAT_UBSAN=ON)
+          elif [ '${{ matrix.sanitizer }}' = thread ]; then
+            options+=(-DANTICHEAT_TSAN=ON)
+          fi
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug "${options[@]}"
+      - run: cmake --build build --parallel 2
+      - run: ctest --test-dir build --output-on-failure
+  azerothcore:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          path: module
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libboost-all-dev libssl-dev libmysqlclient-dev libreadline-dev zlib1g-dev libbz2-dev libncurses-dev
+      - name: Check out identified core
+        run: |
+          git init core
+          git -C core remote add origin https://github.com/azerothcore/azerothcore-wotlk.git
+          git -C core fetch --depth 1 origin a4b1f8a040fa82782b34578bc37293f215d0e908
+          git -C core checkout --detach FETCH_HEAD
+          ln -s "$GITHUB_WORKSPACE/module" core/modules/mod-anticheat
+      - name: Compile standard module
+        run: |
+          cmake -S core -B build-core -G Ninja -DCMAKE_BUILD_TYPE=Debug -DSCRIPTS=none -DMODULES=static -DAPPS_BUILD=world-only -DUSE_COREPCH=OFF -DUSE_SCRIPTPCH=OFF
+          cmake --build build-core --target modules --parallel 2
+      - name: Compile optional Warden bridge
+        run: |
+          git -C core apply --check "$GITHUB_WORKSPACE/module/patches/warden-hook.patch"
+          git -C core apply "$GITHUB_WORKSPACE/module/patches/warden-hook.patch"
+          cmake --build build-core --target modules --parallel 2
+          ninja -C build-core -j2 src/server/game/CMakeFiles/game.dir/Warden/Warden.cpp.o src/server/game/CMakeFiles/game.dir/Scripting/ScriptDefines/PlayerScript.cpp.o

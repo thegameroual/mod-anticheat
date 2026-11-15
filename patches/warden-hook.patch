@@ -1,0 +1,79 @@
+diff --git a/src/server/game/Scripting/ScriptDefines/PlayerScript.h b/src/server/game/Scripting/ScriptDefines/PlayerScript.h
+--- a/src/server/game/Scripting/ScriptDefines/PlayerScript.h
++++ b/src/server/game/Scripting/ScriptDefines/PlayerScript.h
+@@ -17,6 +17,9 @@
+
+ #ifndef SCRIPT_OBJECT_PLAYER_SCRIPT_H_
+ #define SCRIPT_OBJECT_PLAYER_SCRIPT_H_
++
++// Optional mod-anticheat reporting hook; Warden retains ownership of penalties.
++#define AC_MOD_ANTICHEAT_WARDEN_HOOK 1
+
+ #include "ScriptObject.h"
+ #include "SharedDefines.h"
+@@ -236,6 +239,7 @@
+     PLAYERHOOK_ON_BEFORE_RECEIVE_SPELL_LIST_FROM_TRAINER,
+     PLAYERHOOK_ON_GET_TRAINER_SPELL_STATE,
+     PLAYERHOOK_ON_AFTER_TRAIN_SPELL,
++    PLAYERHOOK_ON_WARDEN_PENALTY,
+     PLAYERHOOK_END
+ };
+
+@@ -245,6 +249,8 @@
+     PlayerScript(char const* name, std::vector<uint16> enabledHooks = std::vector<uint16>());
+
+ public:
++    virtual void OnWardenPenalty(Player* /*player*/, uint16 /*checkId*/, std::string const& /*reason*/) { }
++
+     // Called when a player dies
+     virtual void OnPlayerJustDied(Player* /*player*/) { }
+
+diff --git a/src/server/game/Scripting/ScriptMgr.h b/src/server/game/Scripting/ScriptMgr.h
+--- a/src/server/game/Scripting/ScriptMgr.h
++++ b/src/server/game/Scripting/ScriptMgr.h
+@@ -487,6 +487,8 @@
+     void OnPlayerGetTrainerSpellState(Player const* player, uint32 trainerId, uint32 spellId, Trainer::SpellState& state);
+     void OnPlayerAfterTrainSpell(Player* player, Creature* trainer, uint32 spellId);
+
++    void OnWardenPenalty(Player* player, uint16 checkId, std::string const& reason);
++
+     // Anti cheat
+     void AnticheatSetCanFlybyServer(Player* player, bool apply);
+     void AnticheatSetUnderACKmount(Player* player);
+diff --git a/src/server/game/Scripting/ScriptDefines/PlayerScript.cpp b/src/server/game/Scripting/ScriptDefines/PlayerScript.cpp
+--- a/src/server/game/Scripting/ScriptDefines/PlayerScript.cpp
++++ b/src/server/game/Scripting/ScriptDefines/PlayerScript.cpp
+@@ -893,6 +893,11 @@
+ }
+
+ // Player anti cheat
++void ScriptMgr::OnWardenPenalty(Player* player, uint16 checkId, std::string const& reason)
++{
++    CALL_ENABLED_HOOKS(PlayerScript, PLAYERHOOK_ON_WARDEN_PENALTY, script->OnWardenPenalty(player, checkId, reason));
++}
++
+ void ScriptMgr::AnticheatSetCanFlybyServer(Player* player, bool apply)
+ {
+     CALL_ENABLED_HOOKS(PlayerScript, PLAYERHOOK_ANTICHEAT_SET_CAN_FLY_BY_SERVER, script->AnticheatSetCanFlybyServer(player, apply));
+diff --git a/src/server/game/Warden/Warden.cpp b/src/server/game/Warden/Warden.cpp
+--- a/src/server/game/Warden/Warden.cpp
++++ b/src/server/game/Warden/Warden.cpp
+@@ -18,6 +18,7 @@
+ #include "Warden.h"
+ #include "AccountMgr.h"
+ #include "BanMgr.h"
++#include "ScriptMgr.h"
+ #include "ByteBuffer.h"
+ #include "CryptoHash.h"
+ #include "Log.h"
+@@ -274,6 +275,10 @@
+
+     reportMsg = "Warden: " + reportMsg;
+     LOG_INFO("warden", "> Warden: {}", reportMsg);
++
++    // Reporting only: ApplyPenalty has already made the enforcement decision.
++    if (Player* player = _session->GetPlayer())
++        sScriptMgr->OnWardenPenalty(player, checkId, causeMsg);
+ }
+
+ bool Warden::ProcessLuaCheckResponse(std::string const& msg)
