@@ -5,6 +5,7 @@ void RunMovementTests();
 void RunPolicyTests();
 void RunRepositoryTests();
 void RunConfigTests();
+void RunSequenceTests();
 
 int main(int argc, char** argv)
 {
@@ -24,6 +25,7 @@ int main(int argc, char** argv)
         run("policy", RunPolicyTests);
         run("repository", RunRepositoryTests);
         run("config", RunConfigTests);
+        run("sequences", RunSequenceTests);
         if (!ran)
             throw std::runtime_error("unknown test suite");
         std::cout << anticheat::test::checks << " checks passed\n";

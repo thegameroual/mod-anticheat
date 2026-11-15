@@ -20,6 +20,7 @@ struct MovementState
     bool previousExempt = false;
     bool previousServerTransport = false;
     bool previousFlightAllowed = false;
+    bool previousSwimmingAllowed = false;
     bool previousWaterWalkAllowed = false;
     bool previousSlowFallAllowed = false;
     bool previousRooted = false;
@@ -39,6 +40,7 @@ struct MovementState
     double speedAllowance = 0.0;
     float speedWindowPeak = 7.0f;
     std::uint32_t speedWindowLatencyMs = 0;
+    bool speedWindowReliable = true;
 
     bool jumping = false;
     std::uint64_t jumpStartedMs = 0;

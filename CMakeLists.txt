@@ -62,11 +62,12 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   endif()
 
   add_executable(anticheat_tests tests/TestMain.cpp tests/MovementTests.cpp tests/PolicyTests.cpp
-    tests/RepositoryTests.cpp tests/ConfigTests.cpp)
+    tests/RepositoryTests.cpp tests/ConfigTests.cpp tests/SequenceTests.cpp)
   target_link_libraries(anticheat_tests PRIVATE anticheat_engine Threads::Threads)
+  target_compile_definitions(anticheat_tests PRIVATE ANTICHEAT_CONFIG_PATH="${CMAKE_CURRENT_SOURCE_DIR}/conf/mod_anticheat.conf.dist")
   # Exercise the same C++20 atomic shared_ptr publication used by the core adapter.
   target_compile_features(anticheat_tests PRIVATE cxx_std_20)
-  foreach(suite movement policy repository config)
+  foreach(suite movement policy repository config sequences)
     add_test(NAME anticheat_${suite} COMMAND anticheat_tests ${suite})
   endforeach()
   add_executable(anticheat_benchmark tests/Benchmark.cpp)

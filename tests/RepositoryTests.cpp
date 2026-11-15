@@ -92,6 +92,15 @@ void RunRepositoryTests()
     CHECK(query.find("UPDATE x") == std::string::npos);
     CHECK(query.find(",1.5,") != std::string::npos);
     CHECK(query.find("ON DUPLICATE KEY UPDATE") != std::string::npos);
+    // Lifecycle snapshots must not inflate the v2 incident counters.
+    CHECK(query.find("`anticheat_events_v3`") != std::string::npos);
+    report.incidentKey = "session-epoch-detector-incident";
+    report.kind = ReportKind::Lifecycle;
+    auto snapshotQuery = BuildReportInsert(report);
+    CHECK(snapshotQuery.find("`incident_key`,`event_kind`") != std::string::npos);
+    CHECK(snapshotQuery.find(SqlText(report.incidentKey, 128)) != std::string::npos);
+    report.kind = static_cast<ReportKind>(255);
+    CHECK(!queue.Enqueue(report));
     bool threw = false;
     try { BuildReportInsert(invalid); }
     catch (std::invalid_argument const&) { threw = true; }

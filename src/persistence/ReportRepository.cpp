@@ -100,6 +100,8 @@ bool ReportRepository::Enqueue(ReportRecord record)
 {
     std::lock_guard<std::mutex> lock(_impl->mutex);
     record.eventKey = _impl->boot + '-' + std::to_string(++_impl->sequence);
+    if (!record.incidentKey.empty())
+        record.incidentKey = _impl->boot + '-' + record.incidentKey;
     if (!record.createdAt)
         record.createdAt = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::system_clock::now().time_since_epoch()).count());

@@ -10,6 +10,8 @@
 
 namespace anticheat
 {
+enum class ReportKind : std::uint8_t { Opened = 0, Lifecycle = 1, Alert = 2, Decision = 3, Warden = 4 };
+
 struct RepositoryConfig
 {
     std::size_t capacity = 4096;
@@ -36,6 +38,9 @@ struct ReportRecord
     Action action = Action::None;
     // Assigned by the repository once. Retries keep the same idempotency key.
     std::string eventKey;
+    // Stable within an incident, unlike the event key of each lifecycle snapshot.
+    std::string incidentKey;
+    ReportKind kind = ReportKind::Opened;
     std::uint64_t createdAt = 0;
 };
 

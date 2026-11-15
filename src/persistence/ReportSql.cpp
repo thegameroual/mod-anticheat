@@ -58,20 +58,22 @@ std::string BuildReportInsert(ReportRecord const& record)
 {
     if (Index(record.type) >= DetectionCount || !std::isfinite(record.x) ||
         !std::isfinite(record.y) || !std::isfinite(record.z) || !std::isfinite(record.score) ||
-        !std::isfinite(record.confidence) || record.eventKey.empty())
+        !std::isfinite(record.confidence) || record.eventKey.empty() ||
+        static_cast<unsigned>(record.kind) > static_cast<unsigned>(ReportKind::Warden))
         throw std::invalid_argument("Invalid anticheat report");
     std::ostringstream sql;
     sql.imbue(std::locale::classic());
     sql << std::setprecision(std::numeric_limits<float>::max_digits10);
-    sql << "INSERT INTO `anticheat_events_v2` (`event_key`,`guid`,`account`,`name`,`cheat_type`,"
+    sql << "INSERT INTO `anticheat_events_v3` (`event_key`,`guid`,`account`,`name`,`cheat_type`,"
         "`map_id`,`position_x`,`position_y`,`position_z`,`confidence`,`score`,`actionable`,"
-        "`action`,`details`,`created_at`) VALUES ("
+        "`action`,`details`,`created_at`,`incident_key`,`event_kind`) VALUES ("
         << SqlText(record.eventKey, 64) << ',' << record.guid << ',' << record.account << ','
         << SqlText(record.name, 48) << ',' << Index(record.type) << ',' << record.mapId << ','
         << record.x << ',' << record.y << ',' << record.z << ',' << record.confidence << ','
         << record.score << ',' << (record.actionable ? 1 : 0) << ','
         << static_cast<unsigned>(record.action) << ',' << SqlText(record.details, 1024) << ','
-        << record.createdAt << ") ON DUPLICATE KEY UPDATE `event_key`=VALUES(`event_key`)";
+        << record.createdAt << ',' << SqlText(record.incidentKey, 128) << ',' << static_cast<unsigned>(record.kind)
+        << ") ON DUPLICATE KEY UPDATE `event_key`=VALUES(`event_key`)";
     return sql.str();
 }
 }

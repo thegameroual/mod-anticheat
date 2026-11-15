@@ -6,7 +6,6 @@ Anticheat.Enable = 1
 # Always validate on your server in mode 0 before considering mode 2.
 Anticheat.Mode = 0
 Anticheat.GM.AnnounceLevel = 1
-Anticheat.GM.AlertFrequencyMs = 30000
 Anticheat.LoginMessage = 1
 # Cumulative packet/geometry counters and movement/scoring elapsed time every 60 seconds.
 # Timing includes state-lock acquisition; terrain queries and SQL are outside this interval.
@@ -37,11 +36,9 @@ Anticheat.Movement.TransitionGraceMs = 1500
 Anticheat.Movement.LatencyCapMs = 500
 Anticheat.Movement.GeometryIntervalMs = 500
 
-# Repeated packets belonging to one continuous anomaly count once. RearmMs
+# One incident retains its identity; reliable non-overlapping windows confirm persistence. RearmMs
 # must cover at least two speed windows plus TransitionGraceMs (7500 default).
-Anticheat.Score.CooldownMs = 10000
 Anticheat.Score.RearmMs = 10000
-Anticheat.Score.GlobalCooldownMs = 1000
 Anticheat.Score.EvidenceWindowMs = 120000
 Anticheat.Score.MinConfidence = 0.8
 Anticheat.Score.MinObservationConfidence = 0.3
@@ -83,3 +80,27 @@ Anticheat.Persistence.ShutdownTimeoutMs = 30000
 # .anticheat reload validates a complete candidate; invalid config retains the
 # previous revision. A valid reload resets live movement/score evidence before
 # new analysis, preserving historical SQL records and per-session action latches.
+
+# Incident confirmation, bounded risk, independent alerts, and opt-in Speed-only policy.
+# SingleFamilyEnabled permits kicks only; SingleFamilyBan is a separate explicit opt-in.
+Anticheat.Score.ConfirmationWindowMs = 3000
+Anticheat.Score.MaxObservationGapMs = 6000
+Anticheat.Score.ReportIntervalMs = 15000
+Anticheat.Score.PersistencePerSecond = 2
+Anticheat.Score.MaxIncidentRisk = 200
+Anticheat.Alert.MinDurationMs = 9000
+Anticheat.Alert.RepeatMs = 60000
+Anticheat.Alert.FreshnessMs = 6000
+Anticheat.Alert.MinWindows = 3
+Anticheat.Alert.MinSeverity = 1.1
+Anticheat.Alert.SevereSeverity = 3
+Anticheat.Alert.MinConfidence = 0.8
+Anticheat.Enforcement.SingleFamilyEnabled = 0
+Anticheat.Enforcement.SingleFamilyBan = 0
+Anticheat.Enforcement.SingleMinDurationMs = 60000
+Anticheat.Enforcement.SingleMinWindows = 20
+Anticheat.Enforcement.SingleMinSeverity = 1.5
+Anticheat.Enforcement.FreshnessMs = 6000
+Anticheat.Warden.CooldownMs = 10000
+# Removed: Score.CooldownMs, Score.GlobalCooldownMs and GM.AlertFrequencyMs.
+# Use evaluated normal time (RearmMs), Alert.RepeatMs and Warden.CooldownMs instead.

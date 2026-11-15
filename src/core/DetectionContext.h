@@ -34,6 +34,7 @@ struct DetectionContext
     bool transportInvalid = false;
     bool teleport = false;
     bool forcedMovement = false;
+    bool speedTransition = false; // Real server speed history overlaps this observation interval.
     bool flightAllowed = false;
     bool waterWalkAllowed = false;
     bool slowFallAllowed = false;

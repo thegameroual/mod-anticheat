@@ -1,139 +1,164 @@
 #include "TestHarness.h"
-#include "scoring/ViolationScorer.h"
-#include "enforcement/EnforcementManager.h"
+#include "core/AnticheatConfig.h"
 #include <limits>
-
 using namespace anticheat;
-
 namespace
 {
-DetectionResult Signal(DetectionType type, float confidence = 1, bool actionable = true)
+DetectionBatch Evaluation(std::uint64_t begin, std::uint64_t end, bool anomaly = true,
+    DetectionType type = DetectionType::Speed, bool actionable = true)
 {
-    return {type, confidence, actionable, 30, 7, "test"};
-}
-
-ScoreState RepeatedEvidence(ScoreConfig const& config, DetectionType second = DetectionType::Fly)
-{
-    ScoreState state;
-    DetectionResult results[] = {Signal(DetectionType::Speed), Signal(second)};
-    for (std::uint64_t time = 1000; time <= 81000; time += 20000)
-    {
-        ViolationScorer::Observe(state, results, 2, time, config);
-        ViolationScorer::Observe(state, nullptr, 0, time + 1, config);
-    }
-    return state;
+    DetectionBatch b;
+    b.evaluations[Index(type)] = {anomaly ? EvaluationStatus::Anomalous : EvaluationStatus::Normal, begin, end, true};
+    if (anomaly) b.Add({type, 0.9f, actionable, 60, 27.25f, "test interval"});
+    return b;
 }
 }
-
 void RunPolicyTests()
 {
-    ScoreConfig config;
-    config.decayPerSecond = 0;
-    auto speed = Signal(DetectionType::Speed);
-    ScoreState state;
-    CHECK(ViolationScorer::Observe(state, nullptr, 0, 0, config).count == 0);
-    CHECK(ViolationScorer::Observe(state, &speed, 1, 0, config).count == 1);
-    for (std::uint64_t time = 1; time <= 10000; ++time)
-        CHECK(ViolationScorer::Observe(state, &speed, 1, time, config).count == 0);
-    CHECK(state.totalAccepted == 1);
-    CHECK(state.rawObservations == 10001);
-    CHECK_NEAR(state.score, 5, 0.001f);
-
-    // No packets during a long outage cannot manufacture a clean observation.
-    CHECK(ViolationScorer::Observe(state, &speed, 1, 120000, config).count == 0);
-    ViolationScorer::Observe(state, nullptr, 0, 120001, config);
-    CHECK(ViolationScorer::Observe(state, &speed, 1, 130002, config).count == 1);
-    CHECK(state.counts[Index(DetectionType::Speed)] == 2);
-    CHECK_NEAR(state.scoreSum / state.scoreSamples, 7.5, 0.001);
-
-    // Windowed speed output is absent between evaluations, not a new incident.
-    ScoreState sparse;
-    for (std::uint64_t time = 0; time <= 120000; time += 100)
     {
-        bool anomaly = time % 3000 == 0;
-        ViolationScorer::Observe(sparse, anomaly ? &speed : nullptr, anomaly ? 1 : 0, time, config);
+        // Later point samples update diagnostic reports without inventing duration.
+        ScoreState points;
+        ScoreConfig policy;
+        auto sample = Evaluation(1000, 1000, true, DetectionType::NoClip, false);
+        CHECK(ViolationScorer::Observe(points, sample, 1000, policy).count == 1);
+        auto id = points.episodes[Index(DetectionType::NoClip)].id;
+        sample = Evaluation(16000, 16000, true, DetectionType::NoClip, false);
+        CHECK(ViolationScorer::Observe(points, sample, 16000, policy).count == 1);
+        auto const& incident = points.episodes[Index(DetectionType::NoClip)];
+        CHECK(incident.id == id && incident.lastAnomalyMs == 16000);
+        CHECK(incident.coveredMs == 0 && points.score == 0);
     }
-    CHECK(sparse.totalAccepted == 1);
+    ScoreConfig c;
+    ScoreState s;
+    auto first = ViolationScorer::Observe(s, Evaluation(0,3000), 3000, c);
+    CHECK(first.count == 1 && first.incidents[0].opened);
+    auto id = s.episodes[0].id;
+    for (std::uint64_t now = 6000; now <= 60000; now += 3000)
+        ViolationScorer::Observe(s, Evaluation(now-3000,now), now, c);
+    CHECK(s.score > 50); // Previously failed: ongoing Speed risk decayed to zero.
+    CHECK(s.totalAccepted == 1 && s.episodes[0].id == id);
+    CHECK(s.episodes[0].confirmedWindows == 20);
+    CHECK(s.episodes[0].coveredMs == 60000);
+    auto saved = s.episodes[0].coveredMs;
+    for (unsigned i=0; i<10000; ++i)
+        ViolationScorer::Observe(s, Evaluation(57000,60000), 60000, c);
+    CHECK(s.episodes[0].coveredMs == saved);
+    CHECK(s.totalAccepted == 1);
+    DetectionBatch unknown;
+    ViolationScorer::Observe(s, unknown, 63000, c);
+    CHECK(s.episodes[0].normalMs == 0);
+    auto tick = ViolationScorer::Tick(s, 67000, c);
+    CHECK(tick.count == 1 && s.episodes[0].phase == IncidentPhase::Interrupted);
+    CHECK(s.episodes[0].qualifiedMs == 0);
+    CHECK(s.episodes[0].coveredMs == saved);
+    ViolationScorer::Observe(s, Evaluation(67000,70000), 70000, c);
+    CHECK(s.episodes[0].id == id); // Interrupted observation is not a new incident.
+    for (std::uint64_t now=73000; now<=82000; now+=3000)
+        ViolationScorer::Observe(s, Evaluation(now-3000,now,false), now, c);
+    CHECK(s.episodes[0].phase == IncidentPhase::Resolved);
+    ViolationScorer::Observe(s, Evaluation(82000,85000),85000,c);
+    CHECK(s.episodes[0].id != id && s.totalAccepted == 2);
+    ViolationScorer::Tick(s, 300000,c);
+    CHECK(s.episodes[0].phase == IncidentPhase::Expired);
+    CHECK(s.score == 0);
 
-    // A cooldown rejection consumes that episode too; it cannot turn into a
-    // fresh incident automatically at the cooldown boundary.
-    ScoreState cooling;
-    auto longCooldown = config;
-    longCooldown.cooldownMs = 60000;
-    CHECK(ViolationScorer::Observe(cooling, &speed, 1, 0, longCooldown).count == 1);
-    ViolationScorer::Observe(cooling, nullptr, 0, 1, longCooldown);
-    CHECK(ViolationScorer::Observe(cooling, &speed, 1, 20000, longCooldown).count == 0);
-    CHECK(ViolationScorer::Observe(cooling, &speed, 1, 60000, longCooldown).count == 0);
-    ViolationScorer::Observe(cooling, nullptr, 0, 60001, longCooldown);
-    CHECK(ViolationScorer::Observe(cooling, &speed, 1, 70002, longCooldown).count == 1);
-
-    ScoreState decay;
-    ViolationScorer::Observe(decay, &speed, 1, 0, config);
-    auto decaying = config;
-    decaying.decayPerSecond = 1;
-    ViolationScorer::Decay(decay, 1500, decaying);
-    CHECK_NEAR(decay.score, 3.5f, 0.001f);
-    ViolationScorer::Decay(decay, 10000, decaying);
-    CHECK(decay.score == 0);
-
-    ScoreState diagnostic;
-    auto geometry = Signal(DetectionType::NoClip, 0.5f, false);
-    CHECK(ViolationScorer::Observe(diagnostic, &geometry, 1, 0, config).count == 1);
-    CHECK(diagnostic.score == 0);
-    CHECK(ViolationScorer::Observe(diagnostic, &speed, 1, 1, config).count == 1);
-    auto warden = Signal(DetectionType::Warden, 1, true);
-    CHECK(ViolationScorer::Observe(diagnostic, &warden, 1, 2, config).count == 1);
-    CHECK_NEAR(diagnostic.score, 5, 0.001f);
-    auto flight = Signal(DetectionType::Fly);
-    auto duringCooldown = ViolationScorer::Observe(diagnostic, &flight, 1, 3, config);
-    CHECK(duringCooldown.count == 1);
-    CHECK(!duringCooldown.accepted[0].actionable);
-    CHECK_NEAR(diagnostic.score, 5, 0.001f);
-
-    ScoreState lowConfidence;
-    auto uncertain = Signal(DetectionType::Speed, 0.5f, true);
-    auto accepted = ViolationScorer::Observe(lowConfidence, &uncertain, 1, 0, config);
-    CHECK(accepted.count == 1);
-    CHECK(!accepted.accepted[0].actionable);
-    CHECK(lowConfidence.score == 0);
-    auto invalid = Signal(DetectionType::Fly, std::numeric_limits<float>::quiet_NaN());
-    CHECK(ViolationScorer::Observe(lowConfidence, &invalid, 1, 0, config).count == 0);
-
-    ScoreState burst;
-    DetectionResult all[] = {Signal(DetectionType::Speed), Signal(DetectionType::Fly),
-        Signal(DetectionType::Teleport), Signal(DetectionType::Waterwalk), Signal(DetectionType::IgnoreControl)};
-    CHECK(ViolationScorer::Observe(burst, all, 5, 0, config).count == 5);
-    CHECK_NEAR(burst.score, config.maxScorePerObservation, 0.001f);
-
+    ScoreState correlated, speedOnly, diagnostics;
+    auto badWeights = c;
+    badWeights.weights.fill(1000);
+    for (std::uint64_t now=3000; now<=90000; now+=3000)
+    {
+        auto b = Evaluation(now-3000,now);
+        ViolationScorer::Observe(speedOnly,b,now,c);
+        b.Add({DetectionType::Teleport,.9f,true,60,27.25f,"same displacement"});
+        b.evaluations[Index(DetectionType::Teleport)] = b.evaluations[0];
+        ViolationScorer::Observe(correlated,b,now,c);
+        ViolationScorer::Observe(diagnostics,Evaluation(now-3000,now,true,DetectionType::NoClip,true),now,badWeights);
+    }
+    CHECK(correlated.score <= speedOnly.score + 10); // Maximum within family, never sum.
+    CHECK(diagnostics.score == 0);
     EnforcementConfig policy;
-    EnforcementState enforcement;
-    auto evidence = RepeatedEvidence(config);
-    CHECK(EnforcementManager::Decide(evidence, enforcement, 81001, 50, false, policy, config).action == Action::None);
+    EnforcementState latch;
+    policy.singleFamilyEnabled = true;
+    CHECK(EnforcementManager::Decide(speedOnly,latch,90000,50,false,policy,c).action == Action::None);
     policy.mode = EnforcementMode::Alert;
-    CHECK(EnforcementManager::Decide(evidence, enforcement, 81001, 50, false, policy, config).action == Action::None);
+    CHECK(EnforcementManager::Decide(speedOnly,latch,90000,50,false,policy,c).action == Action::None);
     policy.mode = EnforcementMode::Automatic;
-    auto decision = EnforcementManager::Decide(evidence, enforcement, 81001, 50, false, policy, config);
-    CHECK(decision.action == Action::Kick);
-    CHECK(decision.evidenceCount == 5);
-    CHECK(decision.familyMask == 3);
-    CHECK(decision.spanMs == 80000);
-    CHECK(EnforcementManager::Decide(evidence, enforcement, 81001, 1000, false, policy, config).action == Action::None);
-    CHECK(EnforcementManager::Decide(evidence, enforcement, 81001, 50, true, policy, config).action == Action::None);
-    policy.banScore = 90;
-    CHECK(EnforcementManager::Decide(evidence, enforcement, 81001, 50, false, policy, config).action == Action::Ban);
-    policy.banSeconds = 0;
-    CHECK(EnforcementManager::Decide(evidence, enforcement, 81001, 50, false, policy, config).action == Action::Kick);
-    enforcement.applied = true;
-    CHECK(EnforcementManager::Decide(evidence, enforcement, 81001, 50, false, policy, config).action == Action::None);
-    enforcement.applied = false;
-    CHECK(EnforcementManager::Decide(evidence, enforcement, 300000, 50, false, policy, config).action == Action::None);
+    CHECK(EnforcementManager::Decide(speedOnly,latch,90000,50,false,policy,c).action == Action::Kick);
+    CHECK(EnforcementManager::Decide(speedOnly,latch,90000,900,false,policy,c).action == Action::None);
+    CHECK(EnforcementManager::Decide(speedOnly,latch,90000,50,true,policy,c).action == Action::None);
+    latch.applied = true;
+    CHECK(EnforcementManager::Decide(speedOnly,latch,90000,50,false,policy,c).action == Action::None);
+    latch.applied = false;
+    policy.singleFamilyEnabled = false;
+    CHECK(EnforcementManager::Decide(correlated,latch,90000,50,false,policy,c).action == Action::None);
+    policy.singleFamilyEnabled = true;
+    CHECK(EnforcementManager::Decide(diagnostics,latch,90000,50,false,policy,c).action == Action::None);
+    CHECK(EnforcementManager::Decide(speedOnly,latch,97000,50,false,policy,c).action == Action::None);
+    AlertState alerts;
+    AlertConfig alertConfig;
+    CHECK(!AlertPolicy::Evaluate(speedOnly,alerts,90000,EnforcementMode::Observation,alertConfig).emit);
+    CHECK(AlertPolicy::Evaluate(speedOnly,alerts,90000,EnforcementMode::Alert,alertConfig).emit);
+    CHECK(!AlertPolicy::Evaluate(speedOnly,alerts,90001,EnforcementMode::Alert,alertConfig).emit);
 
-    // Speed and teleport are correlated displacement evidence, one family.
-    auto correlated = RepeatedEvidence(config, DetectionType::Teleport);
-    CHECK(EnforcementManager::Decide(correlated, enforcement, 81001, 50, false, policy, config).action == Action::None);
-    // One packet with five detector flags remains only one episode.
-    policy.kickScore = 1;
-    CHECK(EnforcementManager::Decide(burst, enforcement, 30000, 50, false, policy, config).action == Action::None);
-    ScoreState reconnect;
-    CHECK(reconnect.score == 0 && reconnect.totalAccepted == 0);
+    ScoreState unknownOnly;
+    DetectionResult signal{DetectionType::Speed,.9f,true,60,27,"no evaluated interval"};
+    for (std::uint64_t now=0; now<=120000; now+=3000)
+        ViolationScorer::Observe(unknownOnly,&signal,1,now,c);
+    CHECK(unknownOnly.totalAccepted == 1);
+    CHECK(unknownOnly.score == 0 && unknownOnly.episodes[0].coveredMs == 0);
+    ScoreState invalid;
+    signal.confidence = std::numeric_limits<float>::quiet_NaN();
+    CHECK(ViolationScorer::Observe(invalid,&signal,1,0,c).count == 0);
+
+    // A weak early window must not veto all later, strongly measured windows.
+    ScoreState improving;
+    for (std::uint64_t now=3000; now<=180000; now+=3000)
+    {
+        auto b = Evaluation(now-3000,now);
+        b.results[0].allowed = 10;
+        b.results[0].observed = now == 3000 ? 11 : 20;
+        ViolationScorer::Observe(improving,b,now,c);
+    }
+    CHECK(EnforcementManager::Decide(improving,{},180000,50,false,policy,c).action == Action::Kick);
+    auto indeterminate = Evaluation(180000,180100,false);
+    indeterminate.evaluations[0].reliable = false;
+    ViolationScorer::Observe(improving,indeterminate,180100,c);
+    CHECK(EnforcementManager::Decide(improving,{},180100,50,false,policy,c).action == Action::None);
+    CHECK(improving.episodes[0].qualifiedMs == 0);
+
+    // A diagnostic portion of a bucket cannot later become qualified evidence.
+    ScoreState mixed;
+    ViolationScorer::Observe(mixed,Evaluation(0,2000,true,DetectionType::Speed,false),2000,c);
+    ViolationScorer::Observe(mixed,Evaluation(2000,3000),3000,c);
+    CHECK(mixed.episodes[0].qualifiedMs == 1000);
+    CHECK(mixed.episodes[0].confirmedWindows == 0);
+
+    // A weak fragment taints its entire confirmed window, even if the last
+    // fragment is strong; only a later uninterrupted strong suffix can qualify.
+    ScoreState fragments;
+    for (std::uint64_t now=3000; now<=57000; now+=3000)
+        ViolationScorer::Observe(fragments,Evaluation(now-3000,now),now,c);
+    auto weakFragment = Evaluation(57000,58000);
+    weakFragment.results[0].observed = 30; // 30 / 27.25 is below the single-family minimum.
+    ViolationScorer::Observe(fragments,weakFragment,58000,c);
+    ViolationScorer::Observe(fragments,Evaluation(58000,60000),60000,c);
+    CHECK(EnforcementManager::Decide(fragments,{},60000,50,false,policy,c).action == Action::None);
+    for (std::uint64_t now=63000; now<=120000; now+=3000)
+        ViolationScorer::Observe(fragments,Evaluation(now-3000,now),now,c);
+    CHECK(EnforcementManager::Decide(fragments,{},120000,50,false,policy,c).action == Action::Kick);
+    auto qualification = fragments.episodes[0].qualifiedMs;
+    auto freshness = fragments.episodes[0].lastAnomalyMs;
+    ViolationScorer::Observe(fragments,Evaluation(120001,120001),120001,c);
+    CHECK(fragments.episodes[0].qualifiedMs == qualification);
+    CHECK(fragments.episodes[0].lastAnomalyMs == freshness);
+    CHECK(EnforcementManager::Decide(fragments,{},120001,50,false,policy,c).action == Action::Kick);
+
+    // Alerts require the configured number of current, uninterrupted windows.
+    AlertConfig manyWindows;
+    manyWindows.minWindows = 10;
+    AlertState reminder;
+    ViolationScorer::Tick(fragments,130000,c);
+    for (std::uint64_t now=133000; now<=139000; now+=3000)
+        ViolationScorer::Observe(fragments,Evaluation(now-3000,now),now,c);
+    CHECK(!AlertPolicy::Evaluate(fragments,reminder,139000,EnforcementMode::Alert,manyWindows).emit);
 }

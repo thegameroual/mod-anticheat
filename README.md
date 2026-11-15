@@ -24,8 +24,8 @@ collision test. See [detector contracts and scenarios](docs/DETECTORS.md).
 
 This is a heuristic movement monitor, not a guarantee against cheating. It does not prove
 client integrity, prevent every low-rate movement exploit, or validate all custom spells,
-transports, maps and other modules. Continuous anomalies are deliberately counted once;
-reviewing persistent reports is part of operating the module.
+transports, maps and other modules. Continuous anomalies retain one incident identity while
+their evaluated duration, risk and reports evolve. See [incident persistence and decisions](docs/INCIDENTS.md).
 
 ## Architecture
 
@@ -33,7 +33,7 @@ reviewing persistent reports is part of operating the module.
 src/
   core/          immutable validated config, movement state/context, manager
   detectors/     independent movement algorithms, fixed-capacity results
-  scoring/       incident deduplication, cooldown, bounded recent evidence
+  scoring/       incident lifecycle, evaluated coverage, bounded risk and evidence
   enforcement/   pure policy decisions; no detector can kick or ban
   persistence/   bounded typed queue, retry-safe SQL and async repository
   integration/   AzerothCore hooks, config loading, optional Warden bridge
@@ -74,13 +74,15 @@ SOURCE modules/mod-anticheat/data/sql/db-characters/base/mod_anticheat.sql;
 For an existing installation, import:
 
 ```sql
-SOURCE modules/mod-anticheat/data/sql/db-characters/updates/2026_11_15_00_anticheat_events_v2.sql;
+SOURCE modules/mod-anticheat/data/sql/db-characters/updates/2026_11_15_01_anticheat_incidents_v3.sql;
 ```
 
-Both scripts preserve existing evidence. The module writes `anticheat_events_v2`; the
-`anticheat_daily_stats_v2` view groups evidence by UTC day. Legacy tables remain available
-but are no longer written. Their old `average_score` cannot be repaired from counts alone.
-The new mean is `AVG(score)` at accepted observations, not a time-weighted average.
+Both scripts preserve existing evidence. The module writes `anticheat_events_v3`; the
+`anticheat_daily_stats_v3` view groups incident openings and independent Warden reports by
+UTC day. Lifecycle snapshots, alerts and decisions do not inflate incident counts or the
+mean score. Legacy and v2 tables remain available but are no longer written. Their history
+is not reconstructed into incidents. The new mean is `AVG(score)` at openings/Warden reports,
+not a time-weighted average.
 See [storage, capacity, failure handling and migration](docs/PERSISTENCE.md).
 
 ## Configuration, scoring and enforcement
@@ -90,29 +92,44 @@ Modes are `0` observation/storage, `1` observation/storage plus GM alerts, and `
 enforcement. Legacy `MaxReportsForKick`, `MaxReportsForBan`, `BanDuration`, `GM.Announce`
 and `AlertFrequency` keys no longer enable actions. Migrate them explicitly.
 
-Raw anomaly observations, accepted incidents, live score and historical SQL records are
-separate. A continuous anomaly is accepted once per detector; another incident requires a
-clean interval and a detector cooldown. The clean interval must exceed two speed windows
-plus transition grace. A global scoring cooldown limits bursts; one observation adds at
-most 20 points by default. Accepted actionable evidence adds weight times confidence.
-Score decays at one point per second by default, without reducing historical counts.
-Diagnostic observations are stored without adding sanction score.
-The live score decays independently of the recent-evidence window. Older residual
-score cannot replace the requirement for enough fresh, independent episodes.
+Raw observations, incident identity, evaluated coverage, current risk and SQL history are
+separate. Detectors explicitly distinguish normal, anomalous, not-evaluated and exempt
+intervals. Missing packets or an unfinished Speed window cannot create normal movement or
+proof of persistence. Three-second confirmation windows use newly evaluated time only.
 
-Mode 2 requires all of the following:
+A continuous incident can maintain risk through a bounded floor derived from qualified
+duration and measured severity. Risk still decays at one point per second between updates.
+Ten seconds of evaluated normal movement resolve an incident; an observation gap over six
+seconds interrupts its qualification. Lifecycle changes and 15-second snapshots preserve
+its evolution without counting every packet as a new incident. Diagnostics never add
+movement-sanction risk. Heuristic confidence is not a calibrated probability of cheating.
 
-- A configured score threshold and at least five recent episodes by default.
-- At least two independent evidence families: displacement (speed/teleport), movement
-  permission (flight/water-walk), or control (root/stun).
-- At least 30 seconds between the first and last supporting episodes, inside a 120-second window.
-- Acceptable latency, no protected movement transition, a matching live session and adequate
-  evidence queue capacity. An earlier movement-evidence enqueue failure inhibits that session's actions.
-- No action already applied in the session. Multiple detections in one packet count as one episode.
+GM alerts in modes 1 and 2 use observed incident persistence and severity independently of
+global score: by default, three windows covering nine seconds with ratio at least 1.1, or
+two windows with ratio at least 3. Boolean permission signals use duration and confidence
+instead of a distance ratio. Same-incident reminders are limited to once per 60 seconds.
+Alert eligibility does not turn a diagnostic into sanction evidence.
+
+Mode 2 provides two decision routes:
+
+- **Corroboration:** at least two independent families, each supported by five qualified
+  windows and 30 observed seconds, plus the configured score threshold. Speed/Teleport
+  share one family; Fly/Waterwalk share another; IgnoreControl is the third.
+- **Persistent Speed:** disabled by default. When explicitly enabled, requires 20 qualified
+  recent contiguous windows, 60 observed seconds and a minimum observed/budget ratio of 1.5
+  across every fragment in that suffix. Earlier weaker windows do not veto later qualification.
+  It permits kicks; temporary bans require a second explicit option.
+
+Both routes require recent evidence, acceptable latency, no protected transition, a matching
+live session and no earlier action. Degraded persistence or server authority inhibits actions.
+Current score sums independent family risks, taking the maximum of correlated detectors
+within each family. A high residual score cannot replace fresh qualifying observations.
+The [incident model](docs/INCIDENTS.md) explains the parameters, effective speed budget,
+lifecycle, safeguards and interpretation of synthetic traces.
 
 Threshold zero disables its corresponding action. Ban duration must be positive and is
 limited to 30 days; default is 24 hours. Permanent automatic bans are unsupported. Every
-action decision records its score, episode count, families, span, session and configuration
+action decision records its score, evaluated windows, families, duration, session and configuration
 revision. Warden retains sole ownership of Warden penalties.
 
 Automatic enforcement remains a policy to validate, not a calibrated guarantee. Custom
@@ -124,7 +141,7 @@ shutdown flushes are logged explicitly. Alerting and operational monitoring are 
 
 | Command | Access | Effect |
 |---|---|---|
-| `.anticheat player [name]` | GM | Current session counts and score; defaults to selection |
+| `.anticheat player [name]` | GM | Session risk, incident IDs/phases, coverage and measurements; defaults to selection |
 | `.anticheat global` | GM | Mode, players, instrumentation and persistence status |
 | `.anticheat reload` | Admin | Reload module config files and validate a complete snapshot |
 | `.anticheat reset` | Admin | Reset live scores; retain stored evidence and action latches |

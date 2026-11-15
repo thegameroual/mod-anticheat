@@ -21,6 +21,7 @@ bool ReportQueue::Enqueue(ReportRecord record)
     std::size_t limit = action ? _config.capacity : _config.capacity - _config.reservedActions;
     if (_pending.size() + _inFlight.size() >= limit || Index(record.type) >= DetectionCount ||
         static_cast<unsigned>(record.action) > static_cast<unsigned>(Action::Ban) ||
+        static_cast<unsigned>(record.kind) > static_cast<unsigned>(ReportKind::Warden) ||
         !std::isfinite(record.x) || !std::isfinite(record.y) || !std::isfinite(record.z) ||
         !std::isfinite(record.confidence) || !std::isfinite(record.score) ||
         record.confidence < 0 || record.confidence > 1 || record.score < 0)
@@ -34,6 +35,7 @@ bool ReportQueue::Enqueue(ReportRecord record)
     record.name.resize(std::min<std::size_t>(record.name.size(), 48));
     record.details.resize(std::min<std::size_t>(record.details.size(), 1024));
     record.eventKey.resize(std::min<std::size_t>(record.eventKey.size(), 64));
+    record.incidentKey.resize(std::min<std::size_t>(record.incidentKey.size(), 128));
     _pending.push_back(std::move(record));
     ++_metrics.accepted;
     return true;

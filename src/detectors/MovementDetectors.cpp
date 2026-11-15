@@ -19,11 +19,30 @@ double Distance3D(Vec3 const& a, Vec3 const& b)
     return std::hypot(DistanceXY(a, b), static_cast<double>(a.z) - b.z);
 }
 
+void Evaluate(DetectionBatch& out, DetectorConfig const& config, DetectionType type,
+    std::uint64_t begin, std::uint64_t end, bool reliable = true, bool exempt = false)
+{
+    if (config.enabled[Index(type)])
+        out.evaluations[Index(type)] = {exempt ? EvaluationStatus::Exempt : EvaluationStatus::Normal,
+            std::min(begin, end), end, reliable && !exempt};
+}
+
+void ExemptAll(DetectionBatch& out, DetectorConfig const& config, std::uint64_t begin, std::uint64_t end)
+{
+    for (std::size_t i = 0; i < DetectionCount; ++i)
+        if (static_cast<DetectionType>(i) != DetectionType::Warden)
+            Evaluate(out, config, static_cast<DetectionType>(i), begin, end, false, true);
+}
+
 void Add(DetectionBatch& out, DetectorConfig const& config, DetectionType type,
     float confidence, bool actionable, double observed, double allowed, char const* reason)
 {
     if (config.enabled[Index(type)])
+    {
         out.Add({type, confidence, actionable, static_cast<float>(observed), static_cast<float>(allowed), reason});
+        if (out.evaluations[Index(type)].status == EvaluationStatus::Normal)
+            out.evaluations[Index(type)].status = EvaluationStatus::Anomalous;
+    }
 }
 
 void StorePrevious(DetectionContext const& c, MovementState& s)
@@ -36,6 +55,7 @@ void StorePrevious(DetectionContext const& c, MovementState& s)
     s.previousExempt = c.exempt;
     s.previousServerTransport = c.serverTransport;
     s.previousFlightAllowed = c.flightAllowed;
+    s.previousSwimmingAllowed = c.swimmingAllowed;
     s.previousWaterWalkAllowed = c.waterWalkAllowed;
     s.previousSlowFallAllowed = c.slowFallAllowed;
     s.previousRooted = c.rooted;
@@ -95,6 +115,20 @@ float IntervalPeakSpeed(DetectionContext const& c, MovementState const& s)
 void CheckSpeed(DetectionContext const& c, MovementState& s, DetectorConfig const& cfg,
     std::uint64_t elapsed, DetectionBatch& out)
 {
+    // Keep quality for the entire window, including transitions that ended before
+    // its closing packet. A larger authorized allowance still detects gross
+    // excess, but does not establish sustained unauthorised movement.
+    float baseSpeed = std::max(c.allowedSpeed, s.previousSpeed);
+    bool transition = c.speedTransition || std::abs(c.allowedSpeed - s.previousSpeed) > 0.001f ||
+        c.flightAllowed != s.previousFlightAllowed ||
+        c.swimmingAllowed != s.previousSwimmingAllowed ||
+        (s.previousTimeMs < s.speedGraceUntilMs &&
+            std::max(s.speedGraceMaxSpeed, s.speedGracePeakSpeed) > baseSpeed + 0.001f);
+    if (transition)
+    {
+        s.speedWindowReliable = false;
+        Evaluate(out, cfg, DetectionType::Speed, s.previousTimeMs, c.nowMs, false, true);
+    }
     // Ground movement uses XY: jumping/falling cannot waive horizontal speed checks.
     // Flying/swimming uses 3D only when the server authorizes that movement mode.
     double distance = c.flightAllowed || c.swimmingAllowed
@@ -106,7 +140,8 @@ void CheckSpeed(DetectionContext const& c, MovementState& s, DetectorConfig cons
     // One latency allowance per observation window, never one per packet.
     double allowed = s.speedAllowance * cfg.speedTolerance +
         s.speedWindowPeak * (static_cast<double>(s.speedWindowLatencyMs) / 1000.0) + 1.0;
-    if (c.nowMs - s.speedWindowStartMs < cfg.speedWindowMs)
+    bool earlyBurst = c.nowMs - s.speedWindowStartMs < cfg.speedWindowMs;
+    if (earlyBurst)
     {
         // A burst can stop before another packet closes the time window. Give it
         // the full window's budget, then report immediately if even that is exceeded.
@@ -115,21 +150,32 @@ void CheckSpeed(DetectionContext const& c, MovementState& s, DetectorConfig cons
             s.speedWindowPeak * (static_cast<double>(s.speedWindowLatencyMs) / 1000.0) + 1.0;
         if (s.speedDistance <= std::max(allowed, fullWindowBudget))
             return;
-        allowed = std::max(allowed, fullWindowBudget);
+        // The conservative full-window gate decides whether to emit early.
+        // Severity still compares distance with its actual elapsed-time budget,
+        // otherwise early closure would disguise sustained excess as a near miss.
     }
+    Evaluate(out, cfg, DetectionType::Speed, s.speedWindowStartMs, c.nowMs,
+        s.speedWindowReliable, !s.speedWindowReliable);
     if (s.speedDistance > allowed && s.speedDistance > 5.0)
         Add(out, cfg, DetectionType::Speed, 0.9f, true, s.speedDistance, allowed,
-            "distance exceeds server-time movement budget");
+            earlyBurst ? "distance exceeds full-window burst guard; reported budget covers elapsed time" :
+                "distance exceeds server-time movement budget");
     s.speedWindowStartMs = c.nowMs;
     s.speedDistance = 0.0;
     s.speedAllowance = 0.0;
     s.speedWindowPeak = c.allowedSpeed;
     s.speedWindowLatencyMs = 0;
+    s.speedWindowReliable = true;
 }
 
 void CheckTeleport(DetectionContext const& c, MovementState const& s, DetectorConfig const& cfg,
     std::uint64_t elapsed, DetectionBatch& out)
 {
+    bool transition = c.speedTransition || std::abs(c.allowedSpeed - s.previousSpeed) > 0.001f ||
+        (s.previousTimeMs < s.speedGraceUntilMs &&
+            std::max(s.speedGraceMaxSpeed, s.speedGracePeakSpeed) >
+                std::max(c.allowedSpeed, s.previousSpeed) + 0.001f);
+    Evaluate(out, cfg, DetectionType::Teleport, s.previousTimeMs, c.nowMs, !transition, transition);
     double distance = Distance3D(c.position, c.serverPosition);
     double allowedTravel = (IntervalSpeedAllowance(c, s, elapsed) + IntervalPeakSpeed(c, s) *
         (static_cast<double>(std::min(c.latencyMs, cfg.latencyCapMs)) / 1000.0)) * cfg.speedTolerance;
@@ -144,6 +190,8 @@ void CheckTeleport(DetectionContext const& c, MovementState const& s, DetectorCo
 
 void CheckFly(DetectionContext const& c, MovementState const& s, DetectorConfig const& cfg, DetectionBatch& out)
 {
+    Evaluate(out, cfg, DetectionType::Fly, s.previousTimeMs, c.nowMs, true,
+        c.flightAllowed || s.previousTimeMs < s.flightGraceUntilMs);
     if ((c.flying || c.canFly) && !c.flightAllowed && c.nowMs >= s.flightGraceUntilMs)
         Add(out, cfg, DetectionType::Fly, 0.9f, true, 1.0, 0.0,
             "flight flags without server flight authority");
@@ -151,6 +199,8 @@ void CheckFly(DetectionContext const& c, MovementState const& s, DetectorConfig 
 
 void CheckWaterwalk(DetectionContext const& c, MovementState const& s, DetectorConfig const& cfg, DetectionBatch& out)
 {
+    Evaluate(out, cfg, DetectionType::Waterwalk, s.previousTimeMs, c.nowMs, true,
+        c.waterWalkAllowed || s.previousTimeMs < s.waterWalkGraceUntilMs);
     if (c.waterWalking && !c.waterWalkAllowed && c.nowMs >= s.waterWalkGraceUntilMs)
         Add(out, cfg, DetectionType::Waterwalk, 0.85f, true, 1.0, 0.0,
             "water-walk flag without server authority");
@@ -159,6 +209,8 @@ void CheckWaterwalk(DetectionContext const& c, MovementState const& s, DetectorC
 
 void CheckNoFall(DetectionContext const& c, MovementState const& s, DetectorConfig const& cfg, DetectionBatch& out)
 {
+    Evaluate(out, cfg, DetectionType::NoFall, s.previousTimeMs, c.nowMs, false,
+        c.flightAllowed || c.slowFallAllowed || s.previousTimeMs < s.slowFallGraceUntilMs);
     if (c.disableGravity && !c.flightAllowed && !c.slowFallAllowed && c.nowMs >= s.slowFallGraceUntilMs)
         Add(out, cfg, DetectionType::NoFall, 0.55f, false, 1.0, 0.0,
             "gravity-disabled flag; does not establish fall-damage suppression");
@@ -168,18 +220,24 @@ void CheckControl(DetectionContext const& c, MovementState& s, DetectorConfig co
 {
     if (!c.rooted || c.nowMs < s.rootGraceUntilMs)
     {
+        Evaluate(out, cfg, DetectionType::IgnoreControl, s.previousTimeMs, c.nowMs, false, true);
         s.rootAnchorValid = false;
         s.rootDistanceBase = 0.0;
         return;
     }
     if (!s.rootAnchorValid)
     {
+        Evaluate(out, cfg, DetectionType::IgnoreControl, s.previousTimeMs, c.nowMs, false, true);
         s.rootAnchor = c.position;
         s.rootAnchorValid = true;
         return;
     }
+    Evaluate(out, cfg, DetectionType::IgnoreControl, s.previousTimeMs, c.nowMs, true,
+        s.previousTimeMs < s.rootGraceUntilMs);
     double distance = s.rootDistanceBase + DistanceXY(c.position, s.rootAnchor);
-    if (distance > 1.5)
+    // The anchor catches sub-yard steps. Once a step has been reported, merely
+    // standing at that offset is a normal interval, not new movement evidence.
+    if (distance > 1.5 && DistanceXY(c.position, s.previousPosition) > 0.0)
         Add(out, cfg, DetectionType::IgnoreControl, 0.85f, true, distance, 1.5,
             "horizontal displacement from stable server-root anchor");
 }
@@ -187,7 +245,11 @@ void CheckControl(DetectionContext const& c, MovementState& s, DetectorConfig co
 void CheckClimb(DetectionContext const& c, MovementState const& s, DetectorConfig const& cfg, DetectionBatch& out)
 {
     if (c.serverTransport || c.flightAllowed || c.swimmingAllowed || c.slowFallAllowed || c.falling || c.jump || s.jumping)
+    {
+        Evaluate(out, cfg, DetectionType::Climb, s.previousTimeMs, c.nowMs, false, true);
         return;
+    }
+    Evaluate(out, cfg, DetectionType::Climb, s.previousTimeMs, c.nowMs, false);
     double dz = static_cast<double>(c.position.z) - s.previousPosition.z;
     if (dz < 2.0)
         return;
@@ -208,12 +270,18 @@ void CheckJumpAndGravity(DetectionContext const& c, MovementState& s, DetectorCo
         s.falling = false;
     }
     if (c.serverTransport || c.flightAllowed || c.swimmingAllowed || c.slowFallAllowed)
+    {
+        Evaluate(out, cfg, DetectionType::Jump, s.previousTimeMs, c.nowMs, false, true);
+        Evaluate(out, cfg, DetectionType::Gravity, s.previousTimeMs, c.nowMs, false, true);
         return;
+    }
 
     if (s.jumping && c.nowMs - s.jumpStartedMs > 10000)
         s.jumping = false; // A missing landing opcode must not leave a permanent state.
     if (c.jump)
     {
+        if (c.groundSampled && groundKnown)
+            Evaluate(out, cfg, DetectionType::Jump, c.nowMs, c.nowMs, false);
         if (s.jumping && groundKnown && height > 3.0)
             Add(out, cfg, DetectionType::Jump, 0.65f, false, height, 3.0,
                 "repeated jump while above sampled terrain");
@@ -238,6 +306,8 @@ void CheckJumpAndGravity(DetectionContext const& c, MovementState& s, DetectorCo
         double duration = static_cast<double>(c.nowMs - s.fallPeakMs) / 1000.0;
         if (duration >= 1.5 && groundKnown && height > 3.0)
         {
+            if (c.groundSampled)
+                Evaluate(out, cfg, DetectionType::Gravity, c.nowMs, c.nowMs, false);
             // Conservative diagnostic only: receipt time is not the client's physics clock.
             constexpr double gravity = 19.291105;
             constexpr double terminalVelocity = 60.148003;
@@ -260,6 +330,7 @@ void CheckClock(DetectionContext const& c, MovementState& s, DetectorConfig cons
     auto interval = c.nowMs - s.clockWindowStartMs;
     if (interval < cfg.speedWindowMs)
         return;
+    Evaluate(out, cfg, DetectionType::FakePing, s.clockWindowStartMs, c.nowMs, false);
     // Modular unsigned subtraction handles ordinary uint32 rollover. Backwards clocks are
     // diagnostics, never extra movement allowance and never automatic sanction evidence.
     std::uint32_t clientInterval = c.clientTimeMs - s.clockWindowClientMs;
@@ -273,6 +344,8 @@ void CheckClock(DetectionContext const& c, MovementState& s, DetectorConfig cons
 
 void CheckNoClip(DetectionContext const& c, DetectorConfig const& cfg, DetectionBatch& out)
 {
+    if (c.geometrySampled)
+        Evaluate(out, cfg, DetectionType::NoClip, c.nowMs, c.nowMs, false);
     if (c.geometrySampled && c.lineBlocked)
         Add(out, cfg, DetectionType::NoClip, 0.4f, false, 1.0, 0.0,
             "blocked line of sight; not a player-collision proof");
@@ -310,6 +383,7 @@ DetectionBatch EvaluateMovement(DetectionContext const& c, MovementState& s, Det
     }
     if (s.initialized && c.nowMs < s.previousTimeMs)
     {
+        ExemptAll(out, cfg, c.nowMs, c.nowMs);
         s.Reset();
         s.GrantGrace(c.nowMs, cfg.transitionGraceMs);
         Rebase(c, s);
@@ -317,13 +391,16 @@ DetectionBatch EvaluateMovement(DetectionContext const& c, MovementState& s, Det
     }
     if (!s.initialized || c.mapId != s.mapId)
     {
+        ExemptAll(out, cfg, c.nowMs, c.nowMs);
         if (s.initialized)
             s.GrantGrace(c.nowMs, cfg.transitionGraceMs);
         Rebase(c, s);
         return out;
     }
-    if (c.transportFrameChanged || c.serverTransport != s.previousServerTransport)
+    bool disruptedFrame = c.transportFrameChanged || c.serverTransport != s.previousServerTransport;
+    if (disruptedFrame)
     {
+        s.speedWindowReliable = false;
         // A coordinate change does not erase travelled distance, clock observations
         // or control evidence. Preserve the established rooted displacement magnitude
         // because the old and new frames can have different orientations.
@@ -340,12 +417,14 @@ DetectionBatch EvaluateMovement(DetectionContext const& c, MovementState& s, Det
     auto elapsed = c.nowMs - s.previousTimeMs;
     if (c.exempt || c.teleport || c.forcedMovement || s.previousExempt || s.previousForcedMovement)
     {
+        ExemptAll(out, cfg, s.previousTimeMs, c.nowMs);
         s.GrantGrace(c.nowMs, cfg.transitionGraceMs);
         Rebase(c, s);
         return out;
     }
     if (elapsed > cfg.maxSampleGapMs)
     {
+        ExemptAll(out, cfg, s.previousTimeMs, c.nowMs);
         double distance = DistanceXY(c.position, c.serverPosition);
         double allowed = std::max<double>(cfg.teleportDistance,
             std::max(c.allowedSpeed, s.previousSpeed) * static_cast<double>(elapsed) / 1000.0 * cfg.speedTolerance + 5.0);
@@ -367,6 +446,7 @@ DetectionBatch EvaluateMovement(DetectionContext const& c, MovementState& s, Det
 
     if (c.nowMs < s.graceUntilMs)
     {
+        ExemptAll(out, cfg, s.previousTimeMs, c.nowMs);
         Rebase(c, s);
         return out;
     }
@@ -381,6 +461,8 @@ DetectionBatch EvaluateMovement(DetectionContext const& c, MovementState& s, Det
         baseline.position = c.serverPosition;
         Rebase(baseline, s);
         elapsed = 0;
+        disruptedFrame = true;
+        s.speedWindowReliable = false;
     }
     if (c.groundSampled)
     {
@@ -403,8 +485,19 @@ DetectionBatch EvaluateMovement(DetectionContext const& c, MovementState& s, Det
     CheckClock(c, s, cfg, out);
     CheckNoClip(c, cfg, out);
     if (c.transportInvalid)
+    {
+        Evaluate(out, cfg, DetectionType::NoClip, c.nowMs, c.nowMs, false);
         Add(out, cfg, DetectionType::NoClip, 0.65f, false, 1.0, 0.0,
             "transport claim inconsistent with validated server vessel frame");
+    }
+    if (disruptedFrame)
+    {
+        // Client-influenced transport changes make spatial intervals uncertain,
+        // but do not change server flight/water-walk authority or client clocks.
+        for (auto type : {DetectionType::Speed, DetectionType::Teleport, DetectionType::Climb,
+            DetectionType::Jump, DetectionType::Gravity, DetectionType::IgnoreControl, DetectionType::NoClip})
+            Evaluate(out, cfg, type, s.previousTimeMs, c.nowMs, false, true);
+    }
     StorePrevious(c, s);
     return out;
 }

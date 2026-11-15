@@ -50,6 +50,10 @@ World-side actions resolve the player again and verify the session identity and
 map/instance/phase. Reload publishes an immutable settings snapshot; the next
 movement under a new revision resets movement evidence and score. A sanction
 already applied during the session stays latched.
+Incident keys additionally carry an evidence epoch, incremented when a GM reset or
+configuration reload restarts incident counters. Closing snapshots retain the preceding
+epoch and revision. The world sweep advances incident expiry/interruption without inventing
+observations; alert and enforcement policies operate on detached incident state.
 
 ## Authoritative server movement orders
 

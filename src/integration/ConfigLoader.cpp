@@ -33,7 +33,6 @@ bool LoadAnticheatConfig(AnticheatConfig& c, std::vector<std::string>& errors)
     }
     c.enforcement.mode = static_cast<EnforcementMode>(mode);
     Read("GM.AnnounceLevel", c.gmLevel);
-    Read("GM.AlertFrequencyMs", c.alertFrequencyMs);
     Read("LoginMessage", c.loginMessage);
     Read("Instrumentation", c.instrumentation);
     constexpr char const* toggles[] = {"DetectSpeedHack", "DetectFlyHack", "DetectTeleportHack", "DetectClimbHack",
@@ -56,14 +55,31 @@ bool LoadAnticheatConfig(AnticheatConfig& c, std::vector<std::string>& errors)
     Read("Movement.TransitionGraceMs", c.detectors.transitionGraceMs);
     Read("Movement.LatencyCapMs", c.detectors.latencyCapMs);
     Read("Movement.GeometryIntervalMs", c.detectors.geometryIntervalMs);
-    Read("Score.CooldownMs", c.scoring.cooldownMs);
     Read("Score.RearmMs", c.scoring.rearmMs);
-    Read("Score.GlobalCooldownMs", c.scoring.globalCooldownMs);
     Read("Score.EvidenceWindowMs", c.scoring.evidenceWindowMs);
     Read("Score.MinConfidence", c.scoring.minConfidence);
     Read("Score.MinObservationConfidence", c.scoring.minObservationConfidence);
     Read("Score.MaxPerObservation", c.scoring.maxScorePerObservation);
     Read("Score.DecayPerSecond", c.scoring.decayPerSecond);
+    Read("Score.ConfirmationWindowMs", c.scoring.confirmationWindowMs);
+    Read("Score.MaxObservationGapMs", c.scoring.maxObservationGapMs);
+    Read("Score.ReportIntervalMs", c.scoring.reportIntervalMs);
+    Read("Score.PersistencePerSecond", c.scoring.persistencePerSecond);
+    Read("Score.MaxIncidentRisk", c.scoring.maxIncidentRisk);
+    Read("Alert.MinDurationMs", c.alerts.minDurationMs);
+    Read("Alert.RepeatMs", c.alerts.repeatMs);
+    Read("Alert.FreshnessMs", c.alerts.freshnessMs);
+    Read("Alert.MinWindows", c.alerts.minWindows);
+    Read("Alert.MinSeverity", c.alerts.minSeverity);
+    Read("Alert.SevereSeverity", c.alerts.severeSeverity);
+    Read("Alert.MinConfidence", c.alerts.minConfidence);
+    Read("Enforcement.SingleFamilyEnabled", c.enforcement.singleFamilyEnabled);
+    Read("Enforcement.SingleFamilyBan", c.enforcement.singleFamilyBan);
+    Read("Enforcement.SingleMinDurationMs", c.enforcement.singleMinDurationMs);
+    Read("Enforcement.SingleMinWindows", c.enforcement.singleMinWindows);
+    Read("Enforcement.SingleMinSeverity", c.enforcement.singleMinSeverity);
+    Read("Enforcement.FreshnessMs", c.enforcement.freshnessMs);
+    Read("Warden.CooldownMs", c.wardenCooldownMs);
     Read("Enforcement.KickScore", c.enforcement.kickScore);
     Read("Enforcement.BanScore", c.enforcement.banScore);
     Read("Enforcement.MinEvents", c.enforcement.minEvents);

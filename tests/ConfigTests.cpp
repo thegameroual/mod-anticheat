@@ -8,15 +8,94 @@
 #include <atomic>
 #include <thread>
 #include <vector>
+#include <fstream>
+#include <map>
 
 using namespace anticheat;
 
 void RunConfigTests()
 {
     AnticheatConfig config;
+    // Verify the distributed policy equals the defaults used by end-to-end traces.
+    std::ifstream input(ANTICHEAT_CONFIG_PATH);
+    CHECK(input.good());
+    std::map<std::string, std::string> distributed;
+    std::string line;
+    while (std::getline(input, line))
+    {
+        auto equals = line.find('=');
+        if (line.rfind("Anticheat.", 0) != 0 || equals == std::string::npos) continue;
+        auto key = line.substr(10, equals - 10);
+        while (!key.empty() && key.back() == ' ') key.pop_back();
+        distributed[key] = line.substr(equals + 1);
+    }
+    auto same = [&](char const* key, auto expected)
+    {
+        auto parsed = expected;
+        CHECK(distributed.count(key) == 1);
+        CHECK(ParseConfigValue(distributed.at(key), parsed));
+        CHECK(parsed == expected);
+    };
+    same("Mode", static_cast<unsigned>(config.enforcement.mode));
+    same("Score.RearmMs", config.scoring.rearmMs);
+    same("Score.EvidenceWindowMs", config.scoring.evidenceWindowMs);
+    same("Score.DecayPerSecond", config.scoring.decayPerSecond);
+    same("Score.MinConfidence", config.scoring.minConfidence);
+    same("Score.MinObservationConfidence", config.scoring.minObservationConfidence);
+    same("Score.MaxPerObservation", config.scoring.maxScorePerObservation);
+    same("SpeedHack.Tolerance", config.detectors.speedTolerance);
+    same("Movement.SpeedWindowMs", config.detectors.speedWindowMs);
+    same("Movement.MaxSampleGapMs", config.detectors.maxSampleGapMs);
+    same("Movement.TransitionGraceMs", config.detectors.transitionGraceMs);
+    same("Movement.LatencyCapMs", config.detectors.latencyCapMs);
+    same("Enforcement.KickScore", config.enforcement.kickScore);
+    same("Enforcement.BanScore", config.enforcement.banScore);
+    same("Enforcement.MinEvents", config.enforcement.minEvents);
+    same("Enforcement.MinFamilies", config.enforcement.minFamilies);
+    same("Enforcement.MinSpanMs", config.enforcement.minSpanMs);
+    same("Enforcement.MaxLatencyMs", config.enforcement.maxLatencyMs);
+    same("Enforcement.BanSeconds", config.enforcement.banSeconds);
+    same("Score.ConfirmationWindowMs", config.scoring.confirmationWindowMs);
+    same("Score.MaxObservationGapMs", config.scoring.maxObservationGapMs);
+    same("Score.ReportIntervalMs", config.scoring.reportIntervalMs);
+    same("Score.PersistencePerSecond", config.scoring.persistencePerSecond);
+    same("Score.MaxIncidentRisk", config.scoring.maxIncidentRisk);
+    same("Alert.MinDurationMs", config.alerts.minDurationMs);
+    same("Alert.RepeatMs", config.alerts.repeatMs);
+    same("Alert.FreshnessMs", config.alerts.freshnessMs);
+    same("Alert.MinWindows", config.alerts.minWindows);
+    same("Alert.MinSeverity", config.alerts.minSeverity);
+    same("Alert.SevereSeverity", config.alerts.severeSeverity);
+    same("Alert.MinConfidence", config.alerts.minConfidence);
+    same("Enforcement.SingleFamilyEnabled", config.enforcement.singleFamilyEnabled);
+    same("Enforcement.SingleFamilyBan", config.enforcement.singleFamilyBan);
+    same("Enforcement.SingleMinDurationMs", config.enforcement.singleMinDurationMs);
+    same("Enforcement.SingleMinWindows", config.enforcement.singleMinWindows);
+    same("Enforcement.SingleMinSeverity", config.enforcement.singleMinSeverity);
+    same("Enforcement.FreshnessMs", config.enforcement.freshnessMs);
+    same("Warden.CooldownMs", config.wardenCooldownMs);
+    constexpr char const* weights[] = {"SpeedHack", "FlyHack", "Teleport", "Climb", "Jump", "Gravity",
+        "Waterwalk", "Nofall", "IgnoreControl", "FakePing", "NoClip", "Warden"};
+    for (std::size_t i = 0; i < DetectionCount; ++i)
+        same((std::string("Weight.") + weights[i]).c_str(), config.scoring.weights[i]);
     CHECK(config.Validate().empty());
     CHECK(config.enforcement.mode == EnforcementMode::Observation);
     auto reject = [](AnticheatConfig const& value) { CHECK(!value.Validate().empty()); };
+    config.alerts.freshnessMs = config.scoring.maxObservationGapMs + 1;
+    reject(config);
+    config = {};
+    config.scoring.persistencePerSecond = std::numeric_limits<float>::infinity();
+    reject(config);
+    config = {};
+    config.enforcement.singleMinWindows = 65;
+    reject(config);
+    config = {};
+    config.scoring.confirmationWindowMs = config.detectors.speedWindowMs - 1;
+    reject(config);
+    config = {};
+    config.enforcement.kickScore = 1000;
+    reject(config);
+    config = {};
     config.detectors.speedTolerance = std::numeric_limits<float>::quiet_NaN();
     reject(config);
     config = {};

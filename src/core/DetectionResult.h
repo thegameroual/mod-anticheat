@@ -34,9 +34,22 @@ struct DetectionResult
     char const* reason = ""; // Static detector text; no allocation on the packet path.
 };
 
+enum class EvaluationStatus : std::uint8_t { NotEvaluated, Normal, Anomalous, Exempt };
+
+struct DetectorEvaluation
+{
+    EvaluationStatus status = EvaluationStatus::NotEvaluated;
+    std::uint64_t beginMs = 0;
+    std::uint64_t endMs = 0;
+    bool reliable = false;
+};
+
 struct DetectionBatch
 {
     std::array<DetectionResult, DetectionCount> results{};
+    // Absence of a result is not a normal evaluation. Only explicit intervals
+    // can contribute to observed persistence; zero-length samples add no time.
+    std::array<DetectorEvaluation, DetectionCount> evaluations{};
     std::size_t size = 0;
 
     void Add(DetectionResult const& result)

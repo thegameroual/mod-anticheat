@@ -16,9 +16,10 @@ struct AnticheatConfig
     DetectorConfig detectors;
     ScoreConfig scoring;
     EnforcementConfig enforcement;
+    AlertConfig alerts;
     RepositoryConfig repository;
     std::uint32_t gmLevel = 1;
-    std::uint64_t alertFrequencyMs = 30000;
+    std::uint64_t wardenCooldownMs = 10000;
     bool loginMessage = true;
     bool instrumentation = false;
 

@@ -14,10 +14,13 @@ int main()
 {
     using namespace anticheat;
     std::locale::global(std::locale(std::locale(), new CommaDecimal));
-    for (unsigned i = 1; i <= 5; ++i)
+    for (unsigned i = 1; i <= 7; ++i)
     {
         ReportRecord report;
         report.eventKey = "sql-test-" + std::to_string(i);
+        report.incidentKey = "boot-session-detector-incident";
+        report.kind = i == 6 ? ReportKind::Lifecycle : i == 7 ? ReportKind::Alert :
+            i == 4 ? ReportKind::Decision : ReportKind::Opened;
         report.guid = i == 5 ? 9 : 7;
         report.account = 8;
         report.name = "O'Brien";

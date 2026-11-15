@@ -19,6 +19,12 @@ struct EnforcementConfig
     std::uint64_t minSpanMs = 30000;
     std::uint32_t maxLatencyMs = 750;
     std::uint32_t banSeconds = 86400;
+    bool singleFamilyEnabled = false;
+    bool singleFamilyBan = false;
+    std::uint64_t singleMinDurationMs = 60000;
+    std::uint32_t singleMinWindows = 20;
+    float singleMinSeverity = 1.5f;
+    std::uint64_t freshnessMs = 6000;
 };
 
 struct EnforcementState { bool applied = false; };
@@ -30,6 +36,34 @@ struct EnforcementDecision
     std::uint32_t evidenceCount = 0;
     std::uint32_t familyMask = 0;
     std::uint64_t spanMs = 0;
+    bool singleFamily = false;
+    std::uint64_t incidentId = 0;
+    float severity = 0;
+};
+
+struct AlertConfig
+{
+    std::uint64_t minDurationMs = 9000, repeatMs = 60000, freshnessMs = 6000;
+    std::uint32_t minWindows = 3;
+    float minSeverity = 1.1f, severeSeverity = 3.0f, minConfidence = 0.8f;
+};
+struct AlertState
+{
+    std::array<std::uint64_t, DetectionCount> incident{}, lastAlert{};
+    std::array<float, DetectionCount> severity{};
+};
+struct AlertDecision
+{
+    bool emit = false;
+    DetectionType type = DetectionType::Speed;
+    IncidentSnapshot incident;
+    char const* reason = "";
+};
+class AlertPolicy
+{
+public:
+    static AlertDecision Evaluate(ScoreState const&, AlertState&, std::uint64_t,
+        EnforcementMode, AlertConfig const&);
 };
 
 class EnforcementManager

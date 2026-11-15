@@ -43,8 +43,11 @@ int main()
         }
     }
     auto elapsed = std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - start).count();
+    std::uint64_t incidents = 0;
+    for (auto const& state : scores)
+        incidents += state.totalAccepted;
     std::cout << "Pure movement + scoring benchmark (excludes core hooks, VMAP, database and mutexes)\n"
-              << "players=" << players << " events=" << players * rounds << " accepted=" << observed
+              << "players=" << players << " events=" << players * rounds << " reports=" << observed << " incidents=" << incidents
               << "\n" << std::fixed << std::setprecision(2)
               << "elapsed_ms=" << elapsed / 1000000.0 << " ns_per_event=" << elapsed / (players * rounds)
               << "\nMovementState_bytes=" << sizeof(MovementState) << " ScoreState_bytes=" << sizeof(ScoreState) << '\n';

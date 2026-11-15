@@ -56,6 +56,122 @@ void RunMovementTests()
     using namespace anticheat;
     {
         Movement m;
+        // Early reporting retains the full-window guard (27.25 yd), while its
+        // severity denominator describes the elapsed interval actually evaluated.
+        CHECK(!Has(m.Step(1000, 20.0f), DetectionType::Speed));
+        auto sample = m.Step(400, 8.0f);
+        CHECK(Has(sample, DetectionType::Speed));
+        for (std::size_t i = 0; i < sample.size; ++i)
+            if (sample.results[i].type == DetectionType::Speed)
+            {
+                CHECK_NEAR(sample.results[i].observed, 28.0f, 0.001f);
+                CHECK_NEAR(sample.results[i].allowed, 13.25f, 0.001f);
+            }
+        auto const& evaluation = sample.evaluations[Index(DetectionType::Speed)];
+        CHECK(evaluation.beginMs == 1000 && evaluation.endMs == 2400 && evaluation.reliable);
+    }
+    {
+        Movement m;
+        auto sample = m.Step(100, 0.7f);
+        CHECK(sample.evaluations[Index(DetectionType::Speed)].status == EvaluationStatus::NotEvaluated);
+        CHECK(sample.evaluations[Index(DetectionType::Fly)].status == EvaluationStatus::Normal);
+        CHECK(sample.evaluations[Index(DetectionType::NoClip)].status == EvaluationStatus::NotEvaluated);
+        sample = m.Step(2900, 20.3f);
+        auto const& speed = sample.evaluations[Index(DetectionType::Speed)];
+        CHECK(speed.status == EvaluationStatus::Normal);
+        CHECK(speed.beginMs == 1000 && speed.endMs == 4000 && speed.reliable);
+        sample = m.Step(3000, 60.0f);
+        CHECK(sample.evaluations[Index(DetectionType::Speed)].status == EvaluationStatus::Anomalous);
+        CHECK(sample.evaluations[Index(DetectionType::Speed)].beginMs == 4000);
+        CHECK(sample.evaluations[Index(DetectionType::Speed)].endMs == 7000);
+        m.context.teleport = true;
+        sample = m.Step(100, 500.0f);
+        CHECK(sample.evaluations[Index(DetectionType::Speed)].status == EvaluationStatus::Exempt);
+        CHECK(!sample.evaluations[Index(DetectionType::Speed)].reliable);
+    }
+    {
+        Movement m;
+        m.state.speedGraceUntilMs = 2500;
+        m.state.speedGraceMaxSpeed = 14.0f;
+        auto sample = m.Step(100, 1.4f);
+        CHECK(sample.evaluations[Index(DetectionType::Speed)].status == EvaluationStatus::Exempt);
+        m.Step(1400, 19.6f);
+        sample = m.Step(1500, 10.5f);
+        CHECK(sample.evaluations[Index(DetectionType::Speed)].status == EvaluationStatus::Exempt);
+        CHECK(!sample.evaluations[Index(DetectionType::Speed)].reliable);
+        // The next complete window is independent of the expired transition.
+        sample = m.Step(3000, 21.0f);
+        CHECK(sample.evaluations[Index(DetectionType::Speed)].status == EvaluationStatus::Normal);
+        CHECK(sample.evaluations[Index(DetectionType::Speed)].reliable);
+        CHECK(sample.evaluations[Index(DetectionType::Speed)].beginMs == 4000);
+        sample = m.Step(10000, 100.0f);
+        CHECK(sample.evaluations[Index(DetectionType::Speed)].status == EvaluationStatus::Exempt);
+    }
+    {
+        Movement m;
+        // A down/up server order can finish at the same allowed speed as the
+        // previous packet. Adapter history still marks that whole interval.
+        m.context.speedTransition = true;
+        auto sample = m.Step(100, 0.7f);
+        CHECK(sample.evaluations[Index(DetectionType::Speed)].status == EvaluationStatus::Exempt);
+        CHECK(sample.evaluations[Index(DetectionType::Teleport)].status == EvaluationStatus::Exempt);
+        m.context.speedTransition = false;
+        sample = m.Step(2900, 20.3f);
+        CHECK(sample.evaluations[Index(DetectionType::Speed)].status == EvaluationStatus::Exempt);
+        sample = m.Step(3000, 21.0f);
+        CHECK(sample.evaluations[Index(DetectionType::Speed)].status == EvaluationStatus::Normal);
+        CHECK(sample.evaluations[Index(DetectionType::Speed)].reliable);
+    }
+    {
+        Movement m;
+        m.context.flying = true;
+        m.state.flightGraceUntilMs = 2500;
+        auto sample = m.Step(1500);
+        CHECK(Has(sample, DetectionType::Fly));
+        CHECK(sample.evaluations[Index(DetectionType::Fly)].status == EvaluationStatus::Exempt);
+        sample = m.Step(100);
+        auto const& flight = sample.evaluations[Index(DetectionType::Fly)];
+        CHECK(flight.status == EvaluationStatus::Anomalous && flight.reliable);
+        CHECK(flight.beginMs == 2500 && flight.endMs == 2600);
+        m.cfg.enabled.fill(false);
+        sample = m.Step(3000, 1000.0f);
+        for (auto const& evaluation : sample.evaluations)
+            CHECK(evaluation.status == EvaluationStatus::NotEvaluated);
+    }
+    {
+        Movement m;
+        auto sample = m.Step(0, 100.0f);
+        CHECK(sample.evaluations[Index(DetectionType::Speed)].status == EvaluationStatus::Anomalous);
+        CHECK(sample.evaluations[Index(DetectionType::Speed)].beginMs == sample.evaluations[Index(DetectionType::Speed)].endMs);
+        m.context.transportFrameChanged = true;
+        m.context.serverTransport = true;
+        sample = m.Step(100, 2.0f);
+        CHECK(sample.evaluations[Index(DetectionType::Speed)].status == EvaluationStatus::Exempt);
+        m.context.transportFrameChanged = false;
+        sample = m.Step(2900, 58.0f);
+        CHECK(sample.evaluations[Index(DetectionType::Speed)].status == EvaluationStatus::Exempt);
+        sample = m.Step(3000, 60.0f);
+        CHECK(sample.evaluations[Index(DetectionType::Speed)].status == EvaluationStatus::Anomalous);
+        CHECK(sample.evaluations[Index(DetectionType::Speed)].reliable);
+    }
+    {
+        Movement m;
+        m.context.geometrySampled = true;
+        m.context.lineBlocked = true;
+        auto sample = m.Step(100);
+        auto const& geometry = sample.evaluations[Index(DetectionType::NoClip)];
+        CHECK(geometry.status == EvaluationStatus::Anomalous && !geometry.reliable);
+        CHECK(geometry.beginMs == geometry.endMs);
+        m.context.geometrySampled = false;
+        sample = m.Step(100);
+        CHECK(sample.evaluations[Index(DetectionType::NoClip)].status == EvaluationStatus::NotEvaluated);
+        m.context.position.z = std::numeric_limits<float>::quiet_NaN();
+        sample = EvaluateMovement(m.context, m.state, m.cfg);
+        for (auto const& evaluation : sample.evaluations)
+            CHECK(evaluation.status == EvaluationStatus::NotEvaluated);
+    }
+    {
+        Movement m;
         m.context.position.x = 3.0f;
         m.context.nowMs += 1000;
         CHECK(ShouldSampleGeometry(m.context, m.state, m.cfg));
